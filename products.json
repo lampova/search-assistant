@@ -1,0 +1,62 @@
+[
+  {
+    "id": 1,
+    "name": "Молоко",
+    "price": 80,
+    "company_id": 1
+  },
+  {
+    "id": 2,
+    "name": "Хлеб",
+    "price": 45,
+    "company_id": 1
+  },
+  {
+    "id": 3,
+    "name": "пикми чехол для ноута",
+    "price": 1000.0,
+    "company_id": 3
+  },
+  {
+    "id": 4,
+    "name": "таблетница",
+    "price": 500.0,
+    "company_id": 3
+  },
+  {
+    "id": 5,
+    "name": "бутылка",
+    "price": 200.0,
+    "company_id": 3
+  },
+  {
+    "id": 6,
+    "name": "ключи",
+    "price": 10000000.0,
+    "company_id": 3
+  },
+  {
+    "id": 7,
+    "name": "сумка",
+    "price": 5000.0,
+    "company_id": 3
+  },
+  {
+    "id": 8,
+    "name": "сумка",
+    "price": 3000.0,
+    "company_id": 4
+  },
+  {
+    "id": 9,
+    "name": "бутылка",
+    "price": 300.0,
+    "company_id": 4
+  },
+  {
+    "id": 10,
+    "name": "ключи",
+    "price": 10000.0,
+    "company_id": 4
+  }
+]
