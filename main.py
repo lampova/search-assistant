@@ -1,277 +1,151 @@
-import json
 import os
-import requests
-from geopy.distance import geodesic
-from typing import List, Dict, Any, Optional
+from document import Document
+from geopy import location
+import json
 
-
-class GeocodingService:
-    @staticmethod
-    def geocode_address(address: str) -> Optional[tuple]:
-        """Преобразует адрес в координаты (широта, долгота)"""
-        try:
-            # Используем Nominatim (OpenStreetMap) - бесплатный сервис
-            url = f"https://nominatim.openstreetmap.org/search"
-            params = {
-                'q': address,
-                'format': 'json',
-                'limit': 1
-            }
-
-            headers = {
-                'User-Agent': 'PriceManagerApp/1.0'
-            }
-
-            response = requests.get(url, params=params, headers=headers)
-            response.raise_for_status()
-
-            data = response.json()
-            if data:
-                return (float(data[0]['lat']), float(data[0]['lon']))
-
-        except Exception as e:
-            print(f"Ошибка геокодирования: {e}")
-
-        return None
-
-    @staticmethod
-    def calculate_distance(coord1: tuple, coord2: tuple) -> float:
-        """Рассчитывает расстояние между двумя точками в км"""
-        return geodesic(coord1, coord2).km
-
+from conf import client
+from gpt import smart_product_search
+from models.company import Company
+from models.product import Product
+from models.user import User
+from services.geocoding import GeocodingService
+from services.file_parser import FileParser
+from utils.data_storage import DataStorage
+from typing import List, Dict
 
 class PriceManager:
     def __init__(self):
         self.companies_file = 'companies.json'
         self.products_file = 'products.json'
-        self.user_address = "Москва, Красная площадь, 1"
-        self.user_location = self._get_user_location()
+        self.user = User("Москва, Красная площадь, 1", GeocodingService.geocode_address("Москва, Красная площадь, 1") or (55.7558, 37.6173))
 
-    def _get_user_location(self) -> tuple:
-        """Получает или запрашивает местоположение пользователя"""
-        # Пробуем получить координаты из адреса
-        location = GeocodingService.geocode_address(self.user_address)
-        if location:
-            return location
+    def add_company_from_file(self, company_name: str, file_path: str, address: str = None) -> str:
+        companies = DataStorage.load_data(self.companies_file)
+        products = DataStorage.load_data(self.products_file)
 
-        # Если не получилось, используем координаты по умолчанию
-        return (55.7558, 37.6173)  # Москва
-
-    def load_data(self, filename: str) -> List[Dict]:
-        if os.path.exists(filename):
-            try:
-                with open(filename, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except:
-                return []
-        return []
-
-    def save_data(self, filename: str, data: List[Dict]):
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-
-    def set_user_location(self):
-        """Устанавливает местоположение пользователя по адресу"""
-        print("\n=== Установка вашего местоположения ===")
-        city = input("Введите ваш город: ").strip()
-        street = input("Введите вашу улицу и дом: ").strip()
-
-        user_address = f"{city}, {street}"
-        location = GeocodingService.geocode_address(user_address)
-
-        if location:
-            self.user_address = user_address
-            self.user_location = location
-            print(f"Местоположение установлено: {user_address}")
-            print(f"Координаты: {location}")
-            return location
+        if address:
+            location = GeocodingService.geocode_address(address)
+            if not location:
+                return f"❌ Не удалось определить координаты для адреса: {address}"
         else:
-            print("Не удалось определить координаты. Используйте ручной ввод:")
-            lat = float(input("Широта: "))
-            lon = float(input("Долгота: "))
-            self.user_location = (lat, lon)
-            return (lat, lon)
+            address = "Адрес не указан"
+            location = [55.7558, 37.6173]
 
-    def add_company_price(self):
-        print("\n=== Загрузка прайса предприятия ===")
+        new_company = Company(len(companies) + 1, company_name, address, list(location))
+        companies.append(new_company.to_dict())
 
-        companies = self.load_data(self.companies_file)
-        products = self.load_data(self.products_file)
+        # Теперь вызываем новый парсер
+        try:
+            parsed_products = FileParser.parse_excel_file(file_path)
+        except Exception as e:
+            return f"❌ Ошибка обработки файла: {str(e)}"
 
-        # Ввод данных о предприятии
-        company_name = input("Введите название предприятия: ")
-        city = input("Введите город: ").strip()
-        street = input("Введите улицу и дом: ").strip()
+        if not parsed_products:
+            return "❌ В файле не найдено товаров с ценами"
 
-        company_address = f"{city}, {street}"
+        added_count = 0
+        for product_data in parsed_products:
+            new_product = Product(len(products) + 1, product_data["name"], product_data["price"], new_company.id)
+            products.append(new_product.to_dict())
+            added_count += 1
 
-        # Геокодирование адреса
-        print("Определяем координаты...")
-        location = GeocodingService.geocode_address(company_address)
+        DataStorage.save_data(self.companies_file, companies)
+        DataStorage.save_data(self.products_file, products)
 
-        if not location:
-            print("Не удалось автоматически определить координаты.")
-            lat = float(input("Введите широту вручную: "))
-            lon = float(input("Введите долготу вручную: "))
-            location = (lat, lon)
+        return (f"✅ Предприятие '{company_name}' добавлено успешно!\n"
+                f"📁 Файл: {os.path.basename(file_path)}\n"
+                f"📊 Обработано товаров: {len(parsed_products)}\n"
+                f"✅ Добавлено товаров: {added_count}\n"
+                f"📍 Адрес: {address}")
 
-        # Создание нового предприятия
-        new_company = {
-            "id": len(companies) + 1,
-            "name": company_name,
-            "address": company_address,
-            "location": list(location)
-        }
-        companies.append(new_company)
+    import json
 
-        # Загрузка товаров
-        print(f"\nДобавление товаров для {company_name}:")
-        print("(для завершения введите 'стоп' в названии товара)")
+    def search_products(self, search_term: str, distance_weight: float = 10) -> list:
+        companies = DataStorage.load_data(self.companies_file)
+        products = DataStorage.load_data(self.products_file)
+        found_products = []
 
-        while True:
-            product_name = input("\nНазвание товара: ").strip()
-            if product_name.lower() == 'стоп':
-                break
+        for product in products:
+            company = next((c for c in companies if c['id'] == product['company_id']), None)
+            if company and 'location' in company:
+                company_coords = tuple(company['location'])
+                distance = GeocodingService.calculate_distance(self.user.location, company_coords)
+                total_score = product['price'] + distance * distance_weight
 
-            try:
-                price = float(input("Цена товара: "))
+                found_products.append({
+                    'product': product,
+                    'company': company,
+                    'distance': distance,
+                    'total_score': total_score
+                })
 
-                new_product = {
-                    "id": len(products) + 1,
-                    "name": product_name,
-                    "price": price,
-                    "company_id": new_company["id"]
-                }
-                products.append(new_product)
-                print(f"✓ Товар '{product_name}' добавлен!")
-
-            except ValueError:
-                print("❌ Ошибка! Введите корректную цену.")
-
-        # Сохранение данных
-        self.save_data(self.companies_file, companies)
-        self.save_data(self.products_file, products)
-        print(f"\n✅ Прайс предприятия '{company_name}' успешно загружен!")
-        print(f"Адрес: {company_address}")
-        print(f"Координаты: {location}")
-        print(f"Добавлено товаров: {len([p for p in products if p['company_id'] == new_company['id']])}")
-
-    def search_products(self):
-        print("\n=== Поиск товаров ===")
-        search_term = input("Введите название товара для поиска: ").lower().strip()
-
-        if not search_term:
-            print("Введите название товара для поиска.")
+        if not found_products:
             return []
 
-        companies = self.load_data(self.companies_file)
-        products = self.load_data(self.products_file)
+        llm_results = smart_product_search(found_products, search_term)
+        product_map = {(fp['product']['name'], fp['company']['name']): fp for fp in found_products}
 
-        # Поиск товаров
-        found_products = []
-        for product in products:
-            if search_term in product['name'].lower():
-                # Находим компанию для этого товара
-                company = next((c for c in companies if c['id'] == product['company_id']), None)
-                if company and 'location' in company:
-                    # Рассчитываем расстояние
-                    company_coords = tuple(company['location'])
-                    distance = GeocodingService.calculate_distance(self.user_location, company_coords)
+        final_results = []
+        for item in llm_results:
+            key = (item['name'], item['company'])
+            if key in product_map:
+                item['total_score'] = product_map[key]['total_score']
+                final_results.append(item)
 
-                    # Балльная система: цена + расстояние * коэффициент
-                    distance_weight = 10  # 1 км = 10 руб "стоимости доставки"
-                    total_score = product['price'] + distance * distance_weight
+        final_results_sorted = sorted(final_results, key=lambda x: x['total_score'])
 
-                    found_products.append({
-                        'product': product,
-                        'company': company,
-                        'distance': distance,
-                        'total_score': total_score
-                    })
+        return final_results_sorted
 
-        return found_products
-
-    def show_best_options(self, products: List[Dict]):
-        if not products:
-            print("❌ Товары не найдены.")
-            return
-
-        # Сортировка по общему баллу (цена + расстояние)
-        sorted_products = sorted(products, key=lambda x: x['total_score'])
-
-        print(f"\n🎯 Топ-3 лучших варианта для покупки:")
-        print("=" * 70)
-
-        for i, item in enumerate(sorted_products[:3], 1):
-            product = item['product']
-            company = item['company']
-
-            print(f"{i}. 🛒 {product['name']} - {product['price']} руб.")
-            print(f"   🏪 Магазин: {company['name']}")
-            print(f"   📍 Адрес: {company.get('address', 'Не указан')}")
-            print(f"   🚗 Расстояние: {item['distance']:.1f} км")
-            print(f"   ⚖️  Общий балл (цена + расстояние): {item['total_score']:.1f}")
-            print(f"   💡 Цена: {product['price']} руб. + "
-                  f"Расстояние: {item['distance']:.1f} км × 10 = {item['total_score']:.1f}")
-            print("-" * 50)
-
-    def view_all_companies(self):
-        companies = self.load_data(self.companies_file)
-        print(f"\n🏢 Все предприятия ({len(companies)}):")
-        print("=" * 50)
-
+    def get_all_companies(self) -> List[Dict]:
+        companies = DataStorage.load_data(self.companies_file)
+        result = []
         for company in companies:
             if 'location' in company:
-                distance = GeocodingService.calculate_distance(
-                    self.user_location,
-                    tuple(company['location'])
-                )
+                distance = GeocodingService.calculate_distance(self.user.location, tuple(company['location']))
             else:
                 distance = "Неизвестно"
+            result.append({
+                'id': company['id'],
+                'name': company['name'],
+                'address': company.get('address', 'Не указан'),
+                'distance': distance
+            })
+        return result
 
-            print(f"{company['id']}. {company['name']}")
-            print(f"   Адрес: {company.get('address', 'Не указан')}")
-            print(f"   Расстояние от вас: {distance:.1f} км" if isinstance(distance,
-                                                                           float) else f"   Расстояние: {distance}")
-            print("-" * 30)
+    def validate_price_file(self, file_path: str) -> bool:
+        if not file_path.lower().endswith('.docx'):
+            return False
+        if not os.path.exists(file_path):
+            return False
+        try:
+            doc = Document(file_path)
+            return len(doc.paragraphs) > 0
+        except:
+            return False
 
-    def main_menu(self):
-        while True:
-            print(f"\n📍 === Система анализа прайсов ===")
-            print(f"Ваше местоположение: {self.user_address}")
-            print(f"Координаты: {self.user_location}")
-            print("1. Загрузить прайс предприятия")
-            print("2. Поиск товара")
-            print("3. Изменить мое местоположение")
-            print("4. Показать все предприятия")
-            print("5. Выход")
+    def get_file_stats(self, file_path: str) -> Dict:
+        try:
+            products = FileParser.parse_docx_file(file_path)
+            return {
+                'total_lines': len([p for p in Document(file_path).paragraphs if p.text.strip()]),
+                'valid_products': len(products),
+                'avg_price': sum(p['price'] for p in products) / len(products) if products else 0
+            }
+        except:
+            return {'total_lines': 0, 'valid_products': 0, 'avg_price': 0}
 
-            choice = input("Выберите действие: ").strip()
+    def get_user_location_info(self) -> str:
+        return f"{self.user.address}\nКоординаты: {self.user.location}"
 
-            if choice == '1':
-                self.add_company_price()
-            elif choice == '2':
-                found_products = self.search_products()
-                self.show_best_options(found_products)
-            elif choice == '3':
-                self.set_user_location()
-            elif choice == '4':
-                self.view_all_companies()
-            elif choice == '5':
-                print("👋 До свидания!")
-                break
-            else:
-                print("❌ Неверный выбор. Попробуйте снова.")
+    def set_user_location(self, city: str, street: str) -> bool:
+        user_address = f"{city}, {street}"
+        location = GeocodingService.geocode_address(user_address)
+        if location:
+            self.user.address = user_address
+            self.user.location = location
+            return True
+        return False
 
 
-# Запуск программы
-if __name__ == "__main__":
-    manager = PriceManager()
 
-    # Создаем файлы, если они не существуют
-    if not os.path.exists(manager.companies_file):
-        manager.save_data(manager.companies_file, [])
-    if not os.path.exists(manager.products_file):
-        manager.save_data(manager.products_file, [])
 
-    manager.main_menu()
